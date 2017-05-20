@@ -1,0 +1,43 @@
+#! /usr/bin/nawk -f
+
+BEGIN {
+    print "ADDRESS","STATE","ISSUED","UPDATED","EXPIRES","MAC","NAME","VENDOR"
+}
+
+$1=="}"     { matched=0 }
+$1=="lease" {
+    matched=NR
+    ADDRESS="-"
+    STATE="-"
+    STARTS="-"
+    EXPIRES="-"
+    UPDATED="-"
+    MAC="-"
+    NAME="-"
+    VENDOR="-"
+}
+
+matched {
+    gsub(/[;"]/,"")
+    if($1=="lease")                                { ADDRESS=$2         }
+    if($1=="starts")                               { ISSUED=$3"T"$4"Z"  }
+    if($1=="ends")                                 { EXPIRES=$3"T"$4"Z" }
+    if($1=="cltt")                                 { UPDATED=$3"T"$4"Z" }
+    if($1=="binding" && $2=="state")               { STATE=$3           }
+    if($1=="hardware")                             { MAC=$NF            }
+    if($1=="client-hostname")                      { NAME=$NF           }
+    if($1=="set" && $2=="vendor-class-identifier") {
+        gsub(/[^=]+= /,"")
+        gsub(/ +/," ")
+        gsub(/ /,"-")
+        VENDOR=$0
+    }
+}
+
+! matched {
+    gsub("[/:]","",ISSUED)
+    gsub("[/:]","",EXPIRES)
+    gsub("[/:]","",UPDATED)
+
+    print ADDRESS,STATE,ISSUED,UPDATED,EXPIRES,MAC,NAME,VENDOR
+}
