@@ -1,0 +1,242 @@
+#! /usr/bin/ksh93
+# -*- mode: shell-script -*-
+
+# The MIT License (MIT)
+# Copyright (c) 2017 Chris Olstrom <chris@olstrom.com>
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+program=(
+    requirements=(
+        cat
+        column
+        getconf
+        hostname
+        nawk
+        tail
+        tr
+        tput
+    )
+)
+
+function requirements {
+    typeset status=0
+
+    for requirement in ${program.requirements[@]}
+    do
+        if ! whence ${requirement} >/dev/null
+        then
+            print -r -u 2 "[WARNING] Missing '${requirement}'"
+            status=127
+        fi
+    done
+
+    return ${status}
+}
+
+requirements || exit 111
+
+NODENAME=$(hostname)
+LEASES=/var/db/isc-dhcp/dhcpd.leases
+PATH=/command:$(getconf PATH)
+
+PROGRAM_NAME=${0##*/}
+
+export TERM=xterm-256color
+
+function style {
+    typeset style
+
+    for style in ${@:-}
+    do
+        case ${style} in
+            default)      tput sgr0;;
+            bold|bright)  tput bold;;
+            dim)          tput dim;;
+            reverse)      tput rev;;
+            standout)     tput smso;;
+            no-standout)  tput rmso;;
+            underline)    tput smul;;
+            no-underline) tput rmul;;
+            black)        tput setaf 0;;
+            red)          tput setaf 1;;
+            green)        tput setaf 2;;
+            yellow)       tput setaf 3;;
+            blue)         tput setaf 4;;
+            magenta)      tput setaf 5;;
+            cyan)         tput setaf 6;;
+            white)        tput setaf 7;;
+            on-black)     tput setab 0;;
+            on-red)       tput setab 1;;
+            on-green)     tput setab 2;;
+            on-yellow)    tput setab 3;;
+            on-blue)      tput setab 4;;
+            on-magenta)   tput setab 5;;
+            on-cyan)      tput setab 6;;
+            on-white)     tput setab 7;;
+        esac
+    done
+}
+
+# Errors
+
+# There are two types of errors: Permanent and Temporary
+
+# Permanent Errors exit with a status of 100
+
+# These are errors where further attempts will fail. This is most often the
+# result of improper usage. For example, a missing mandatory argument is a
+# permanent error: further attempts will continue to fail.
+
+# Temporary Errors exit with a status of 111
+
+# These are errors where further attempts *may* succeed, or fail. Most errors
+# fall under this category. The underlying cause of the error must still be
+# resolved. For example, a missing configuration file is a temporary error: when
+# the configuration file is no longer missing, the previously failing command
+# can be attempted again, and may succeed.
+
+function error {
+    typeset message=${1:-'temporary'}
+    shift 1
+
+    case ${message} in
+        p|perm|permanent)
+            exit 100;;
+        t|temp|temporary)
+            exit 111;;
+        header)
+            print -r "
+$(style bold red)${@:-ERROR}$(style default)
+"
+            ;;
+        invalid-command)
+            print -r -u 2 "
+$(error header OPERATOR ERROR)
+  You tried to do this:
+    $(style standout)${SSH_ORIGINAL_COMMAND}$(style default)
+
+  That is not a valid command.
+
+SUGGESTIONS
+  Read the help:
+    $(style standout)ssh ${NODENAME} help$(style default)
+
+"
+            error permanent;;
+        *)
+            print -r -u 2 "
+$(style bold red)MISSING ERROR$(style reverse)
+
+The requested error message '${1}' could not be found.
+
+"
+            error temporary;;
+    esac
+}
+
+# Help
+
+# The runtime documentation provided here is canon. Any external documentation
+# should be generated using this as source material.
+
+help() {
+    case ${1:-'overview'} in
+        o|overview)
+            print -r "
+usage: ssh ${NODENAME} <action> [arguments]
+
+Actions and shortcuts:
+help (h ) - displays help
+list (ls) - List DHCP Leases
+"
+            ;;
+        h|help)
+            print -r "
+usage: ssh ${NODENAME} help [topic]
+
+Displays help for the requested topic (or an overview if no topic given)
+"
+            ;;
+        ls|list)
+            print -r "
+usage: ssh ${NODENAME} list [options]
+
+Prints a list of DHCP leases to STDOUT
+
+Options:
+-H  Do not print field headers
+-A  Only show active leases
+"
+            ;;
+    esac
+}
+
+function list {
+    typeset filter_headers='{ print }'
+    typeset filter_state='{ print }'
+
+    while getopts hAH OPTION
+    do
+        case ${OPTION} in
+            h)
+                help ${0}
+                exit
+                ;;
+            A) filter_state='NR==1 || $2=="active"';;
+            H) filter_headers='NR > 1';;
+            '?') error permanent;;
+        esac
+    done
+
+    shift $(( OPTIND - 1 ))
+
+    /command/dhcp-leases ${LEASES} \
+        | nawk 'NF>0' \
+        | nawk "${filter_state}" \
+        | nawk "${filter_headers}" \
+        | column -t
+}
+
+function arguments {
+    shift 1
+
+    print -r -- "${@:-}" \
+        | tr -dc [[:alnum:][:space:]@:-.] \
+        | tr [:space:] "\n"
+}
+
+# Main entrypoint for the program
+function main {
+    SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND:-"${*}"}
+    if [[ ${SSH_ORIGINAL_COMMAND} ]]
+    then
+        case ${SSH_ORIGINAL_COMMAND} in
+            h|'h '*|help|'help '*)             COMMAND=help;;
+            ls|'ls '*|list|'list '*)           COMMAND=list;;
+            *) error invalid-command;;
+        esac
+        ${COMMAND} $(arguments ${SSH_ORIGINAL_COMMAND})
+    else
+        help overview >&2
+        exit 100
+    fi
+}
+
+main "${@:-}"
